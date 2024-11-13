@@ -73,7 +73,7 @@ pub mod api {
         pub functions: Vec<Function>,
     }
 
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub struct LLMRequest {
         pub openai_key: String,
         pub messages: Messages,

@@ -80,10 +80,16 @@ struct OpenAiRequest {
 pub async fn llm_call(
     req: api::LLMRequest,
 ) -> anyhow::Result<impl Stream<Item = Result<Delta, api::Error>>> {
+    // print req.messages.messages
+    for message in &req.messages.messages {
+        println!("OpenAiMessage: {:?}", message);
+    }
+
     let model = match req.model.as_deref() {
         Some(model) => model.to_owned(),
-        None => "gpt-4-turbo".into(),
+        None => "gpt-4o".into(),
     };
+    //filter out Null values from messages
 
     let builder = {
         let request = OpenAiRequest {
@@ -104,7 +110,7 @@ pub async fn llm_call(
 
         reqwest::Client::new()
             .post("https://api.openai.com/v1/chat/completions")
-            .bearer_auth(req.openai_key)
+            .bearer_auth(req.openai_key.clone())
             .json(&request)
     };
 
@@ -116,6 +122,17 @@ pub async fn llm_call(
         Some(Ok(reqwest_eventsource::Event::Open)) => {}
         Some(Err(reqwest_eventsource::Error::InvalidStatusCode(status, _))) => {
             error!("{}", &status);
+            if status == 429 {
+                response.close();
+                println!("Rate limit exceeded, try again after 5s");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let openai_key = req.openai_key.clone();
+                return Box::pin(llm_call(api::LLMRequest {
+                    openai_key,
+                    ..req.clone()
+                })).await;
+            }
+
             return Err(api::Error::BadOpenAiRequest.into());
         }
         Some(Err(e)) => {
@@ -163,12 +180,25 @@ pub async fn llm_call(
             Some(ChatChoice { ref mut delta, .. }) => {
                 // The first message contains a redundant `role` field. We remove it.
                 delta.remove("role");
-                if delta.is_empty() {
-                    return Ok(None);
-                }
 
                 if delta.len() == 2 {
                     delta.remove("content");
+                }
+
+                if delta.contains_key("content") {
+                    if delta.get_key_value("content").unwrap().1.is_null() {
+                        delta.remove("content");
+                    }
+                }
+
+                if delta.contains_key("refusal") {
+                    if delta.get_key_value("refusal").unwrap().1.is_null() {
+                        delta.remove("refusal");
+                    }
+                }
+
+                if delta.is_empty() {
+                    return Ok(None);
                 }
 
                 let delta = serde_json::from_value(delta.clone().into()).map_err(|e| {
